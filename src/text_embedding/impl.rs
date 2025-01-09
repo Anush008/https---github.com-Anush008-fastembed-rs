@@ -66,12 +66,12 @@ impl TextEmbedding {
             .get(model_file_name)
             .context(format!("Failed to retrieve {}", model_file_name))?;
 
-        // TODO: If more models need .onnx_data, implement a better way to handle this
-        // Probably by adding `additional_files` field in the `ModelInfo` struct
-        if model_name == EmbeddingModel::MultilingualE5Large {
-            model_repo
-                .get("model.onnx_data")
-                .expect("Failed to retrieve model.onnx_data.");
+        if !model_info.additional_files.is_empty() {
+            for file in &model_info.additional_files {
+                model_repo
+                    .get(file)
+                    .context(format!("Failed to retrieve {}", file))?;
+            }
         }
 
         // prioritise loading pooling config if available, if not (thanks qdrant!), look for it in hardcoded
@@ -132,10 +132,14 @@ impl TextEmbedding {
             .inputs
             .iter()
             .any(|input| input.name == "token_type_ids");
+
+        let needs_task_id = session.inputs.iter().any(|input| input.name == "task_id");
+
         Self {
             tokenizer,
             session,
             need_token_type_ids,
+            needs_task_id,
             pooling: post_process,
             quantization,
         }
@@ -275,6 +279,17 @@ impl TextEmbedding {
                     "token_type_ids".into(),
                     Value::from_array(token_type_ids_array)?.into(),
                 ));
+            }
+
+            // jina v3 uses a lora adapter for a `task`, used for different kinds of embeddings on
+            // the fly. Might be interesting to add later. From their docs, you can also select no
+            // task, so we just input 0 for now.
+            if self.needs_task_id {
+                let task_id_array = Array::from_shape_vec(
+                    (batch_size, encoding_length),
+                    vec![0_i64; batch_size * encoding_length],
+                )?;
+                session_inputs.push(("task_id".into(), Value::from_array(task_id_array)?.into()));
             }
 
             Ok(
